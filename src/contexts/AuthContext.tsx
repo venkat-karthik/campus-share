@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { supabase } from '@/db/supabase';
 import type { User } from '@supabase/supabase-js';
-import type { Profile } from '@/types/types';
+import type { Profile } from '@/types';
 
 export async function getProfile(userId: string): Promise<Profile | null> {
   const { data, error } = await supabase
@@ -11,17 +11,18 @@ export async function getProfile(userId: string): Promise<Profile | null> {
     .maybeSingle();
 
   if (error) {
-    console.error('获取用户信息失败:', error);
+    console.error('Failed to fetch user profile:', error);
     return null;
   }
   return data;
 }
+
 interface AuthContextType {
   user: User | null;
   profile: Profile | null;
   loading: boolean;
   signInWithUsername: (username: string, password: string) => Promise<{ error: Error | null }>;
-  signUpWithUsername: (username: string, password: string) => Promise<{ error: Error | null }>;
+  signUpWithUsername: (username: string, password: string, fullName: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
 }
@@ -79,12 +80,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const signUpWithUsername = async (username: string, password: string) => {
+  const signUpWithUsername = async (username: string, password: string, fullName: string) => {
     try {
       const email = `${username}@miaoda.com`;
       const { error } = await supabase.auth.signUp({
         email,
         password,
+        options: {
+          data: {
+            full_name: fullName,
+          },
+        },
       });
 
       if (error) throw error;
