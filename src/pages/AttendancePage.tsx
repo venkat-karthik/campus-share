@@ -1,7 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { getAttendanceRecords, createAttendanceRecord, getAttendanceStats, deleteAttendanceRecord } from '@/db/api';
-import type { AttendanceRecord, AttendanceStatus } from '@/types';
+import { 
+  useAttendanceRecords, 
+  useCreateAttendanceRecord, 
+  useDeleteAttendanceRecord,
+  useAttendanceStats 
+} from '@/hooks/use-attendance';
+import { usePagination } from '@/hooks/use-pagination';
+import { useDebounce } from '@/hooks/use-debounce';
+import type { AttendanceStatus } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -12,20 +19,33 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Plus, Calendar, AlertTriangle, Trash2 } from 'lucide-react';
+import { SearchBar } from '@/components/common/SearchBar';
+import { FilterBar } from '@/components/common/FilterBar';
+import { Pagination } from '@/components/common/Pagination';
 import { useForm } from 'react-hook-form';
-import { useToast } from '@/hooks/use-toast';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { attendanceRecordSchema } from '@/lib/validators';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+
+const STATUS_OPTIONS = [
+  { value: 'present', label: 'Present' },
+  { value: 'absent', label: 'Absent' },
+];
 
 export default function AttendancePage() {
   const { user } = useAuth();
-  const [records, setRecords] = useState<AttendanceRecord[]>([]);
-  const [subjects, setSubjects] = useState<string[]>([]);
-  const [stats, setStats] = useState<Record<string, { present: number; absent: number; percentage: number }>>({});
-  const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const { toast } = useToast();
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  
+  const debouncedSearch = useDebounce(searchQuery, 300);
+
+  const { data: records = [], isLoading } = useAttendanceRecords(user?.id);
+  const createMutation = useCreateAttendanceRecord();
+  const deleteMutation = useDeleteAttendanceRecord();
 
   const form = useForm({
+    resolver: zodResolver(attendanceRecordSchema),
     defaultValues: {
       subject: '',
       date: new Date().toISOString().split('T')[0],
@@ -34,59 +54,56 @@ export default function AttendancePage() {
     },
   });
 
-  const loadRecords = async () => {
-    if (!user) return;
-    try {
-      setLoading(true);
-      const data = await getAttendanceRecords(user.id);
-      setRecords(data);
+  // Get unique subjects
+  const subjects = useMemo(() => {
+    return Array.from(new Set(records.map(r => r.subject)));
+  }, [records]);
 
-      const uniqueSubjects = Array.from(new Set(data.map(r => r.subject)));
-      setSubjects(uniqueSubjects);
+  // Filter records
+  const filteredRecords = useMemo(() => {
+    let result = records;
 
-      const statsData: Record<string, { present: number; absent: number; percentage: number }> = {};
-      for (const subject of uniqueSubjects) {
-        statsData[subject] = await getAttendanceStats(user.id, subject);
-      }
-      setStats(statsData);
-    } catch (error) {
-      console.error('Failed to load attendance records:', error);
-    } finally {
-      setLoading(false);
+    if (statusFilter !== 'all') {
+      result = result.filter(r => r.status === statusFilter);
     }
-  };
 
-  useEffect(() => {
-    loadRecords();
-  }, [user]);
+    if (debouncedSearch) {
+      const query = debouncedSearch.toLowerCase();
+      result = result.filter(r =>
+        r.subject.toLowerCase().includes(query) ||
+        r.notes?.toLowerCase().includes(query)
+      );
+    }
+
+    return result;
+  }, [records, statusFilter, debouncedSearch]);
+
+  // Pagination
+  const pagination = usePagination({ data: filteredRecords, itemsPerPage: 10 });
 
   const handleSubmit = async (values: { subject: string; date: string; status: AttendanceStatus; notes: string }) => {
     if (!user) return;
 
-    try {
-      await createAttendanceRecord({
+    createMutation.mutate(
+      {
         user_id: user.id,
         subject: values.subject,
         date: values.date,
         status: values.status,
         notes: values.notes || null,
-      });
-      toast({ title: 'Attendance recorded successfully' });
-      setDialogOpen(false);
-      form.reset();
-      loadRecords();
-    } catch (error) {
-      toast({ title: 'Failed to record attendance', variant: 'destructive' });
-    }
+      },
+      {
+        onSuccess: () => {
+          setDialogOpen(false);
+          form.reset();
+        },
+      }
+    );
   };
 
-  const handleDelete = async (id: string) => {
-    try {
-      await deleteAttendanceRecord(id);
-      toast({ title: 'Record deleted' });
-      loadRecords();
-    } catch (error) {
-      toast({ title: 'Failed to delete record', variant: 'destructive' });
+  const handleDelete = (id: string) => {
+    if (confirm('Are you sure you want to delete this record?')) {
+      deleteMutation.mutate(id);
     }
   };
 
@@ -173,14 +190,40 @@ export default function AttendancePage() {
                     </FormItem>
                   )}
                 />
-                <Button type="submit" className="w-full">Record Attendance</Button>
+                <Button type="submit" className="w-full" disabled={createMutation.isPending}>
+                  {createMutation.isPending ? 'Recording...' : 'Record Attendance'}
+                </Button>
               </form>
             </Form>
           </DialogContent>
         </Dialog>
       </div>
 
-      {loading ? (
+      {/* Search and Filter */}
+      <div className="flex flex-col sm:flex-row gap-4">
+        <SearchBar
+          value={searchQuery}
+          onChange={setSearchQuery}
+          placeholder="Search by subject or notes..."
+          className="flex-1"
+        />
+        <FilterBar
+          label="Status"
+          value={statusFilter}
+          onChange={setStatusFilter}
+          options={STATUS_OPTIONS}
+          placeholder="All Status"
+        />
+      </div>
+
+      {/* Results count */}
+      {!isLoading && (
+        <div className="text-sm text-muted-foreground">
+          Found {filteredRecords.length} {filteredRecords.length === 1 ? 'record' : 'records'}
+        </div>
+      )}
+
+      {isLoading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {[1, 2, 3].map((i) => (
             <Card key={i}>
@@ -201,38 +244,41 @@ export default function AttendancePage() {
         <>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {subjects.map((subject) => {
-              const stat = stats[subject];
-              const isLow = stat && stat.percentage < 75;
+              const subjectRecords = records.filter(r => r.subject === subject);
+              const present = subjectRecords.filter(r => r.status === 'present').length;
+              const absent = subjectRecords.filter(r => r.status === 'absent').length;
+              const total = present + absent;
+              const percentage = total > 0 ? (present / total) * 100 : 0;
+              const isLow = percentage < 75;
+
               return (
                 <Card key={subject} className="shadow-card">
                   <CardHeader>
                     <CardTitle>{subject}</CardTitle>
                     <CardDescription>
-                      {stat && (
-                        <div className="space-y-2 mt-2">
-                          <div className="flex justify-between text-sm">
-                            <span>Present: {stat.present}</span>
-                            <span>Absent: {stat.absent}</span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <div className="flex-1 bg-muted rounded-full h-2">
-                              <div
-                                className={`h-2 rounded-full ${isLow ? 'bg-destructive' : 'bg-secondary'}`}
-                                style={{ width: `${stat.percentage}%` }}
-                              />
-                            </div>
-                            <span className={`text-sm font-medium ${isLow ? 'text-destructive' : 'text-secondary'}`}>
-                              {stat.percentage.toFixed(1)}%
-                            </span>
-                          </div>
-                          {isLow && (
-                            <Alert variant="destructive" className="mt-2">
-                              <AlertTriangle className="h-4 w-4" />
-                              <AlertDescription>Low attendance warning!</AlertDescription>
-                            </Alert>
-                          )}
+                      <div className="space-y-2 mt-2">
+                        <div className="flex justify-between text-sm">
+                          <span>Present: {present}</span>
+                          <span>Absent: {absent}</span>
                         </div>
-                      )}
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 bg-muted rounded-full h-2">
+                            <div
+                              className={`h-2 rounded-full ${isLow ? 'bg-destructive' : 'bg-primary'}`}
+                              style={{ width: `${percentage}%` }}
+                            />
+                          </div>
+                          <span className={`text-sm font-medium ${isLow ? 'text-destructive' : 'text-primary'}`}>
+                            {percentage.toFixed(1)}%
+                          </span>
+                        </div>
+                        {isLow && (
+                          <Alert variant="destructive" className="mt-2">
+                            <AlertTriangle className="h-4 w-4" />
+                            <AlertDescription>Low attendance warning!</AlertDescription>
+                          </Alert>
+                        )}
+                      </div>
                     </CardDescription>
                   </CardHeader>
                 </Card>
@@ -242,36 +288,58 @@ export default function AttendancePage() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Recent Records</CardTitle>
+              <CardTitle>Attendance Records</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="space-y-3">
-                {records.slice(0, 10).map((record) => (
-                  <div key={record.id} className="flex items-center justify-between p-3 border rounded-lg">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium">{record.subject}</span>
-                        <Badge variant={record.status === 'present' ? 'default' : 'destructive'}>
-                          {record.status}
-                        </Badge>
+              {pagination.paginatedData.length === 0 ? (
+                <p className="text-center text-muted-foreground py-8">
+                  {searchQuery || statusFilter !== 'all'
+                    ? 'No records match your search criteria.'
+                    : 'No records found.'}
+                </p>
+              ) : (
+                <>
+                  <div className="space-y-3">
+                    {pagination.paginatedData.map((record) => (
+                      <div key={record.id} className="flex items-center justify-between p-3 border rounded-lg">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">{record.subject}</span>
+                            <Badge variant={record.status === 'present' ? 'default' : 'destructive'}>
+                              {record.status}
+                            </Badge>
+                          </div>
+                          <p className="text-sm text-muted-foreground mt-1">
+                            {new Date(record.date).toLocaleDateString()}
+                          </p>
+                          {record.notes && (
+                            <p className="text-sm text-muted-foreground mt-1">{record.notes}</p>
+                          )}
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDelete(record.id)}
+                          disabled={deleteMutation.isPending}
+                        >
+                          <Trash2 className="w-4 h-4 text-destructive" />
+                        </Button>
                       </div>
-                      <p className="text-sm text-muted-foreground mt-1">
-                        {new Date(record.date).toLocaleDateString()}
-                      </p>
-                      {record.notes && (
-                        <p className="text-sm text-muted-foreground mt-1">{record.notes}</p>
-                      )}
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleDelete(record.id)}
-                    >
-                      <Trash2 className="w-4 h-4 text-destructive" />
-                    </Button>
+                    ))}
                   </div>
-                ))}
-              </div>
+
+                  <Pagination
+                    currentPage={pagination.currentPage}
+                    totalPages={pagination.totalPages}
+                    onPageChange={pagination.goToPage}
+                    hasNextPage={pagination.hasNextPage}
+                    hasPreviousPage={pagination.hasPreviousPage}
+                    startIndex={pagination.startIndex}
+                    endIndex={pagination.endIndex}
+                    totalItems={pagination.totalItems}
+                  />
+                </>
+              )}
             </CardContent>
           </Card>
         </>

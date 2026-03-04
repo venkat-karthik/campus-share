@@ -1,54 +1,41 @@
-import { useEffect, useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
-import { getSharedItemsByUser, deleteSharedItem } from '@/db/api';
-import type { SharedItem } from '@/types';
+import { useSharedItemsByUser, useDeleteSharedItem } from '@/hooks/use-shared-items';
+import { usePagination } from '@/hooks/use-pagination';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Plus, Trash2 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Pagination } from '@/components/common/Pagination';
 import ItemForm from '@/components/ItemForm';
 import ItemCard from '@/components/ItemCard';
 
 export default function ShareZonePage() {
   const { zone } = useParams<{ zone: string }>();
   const { user, profile } = useAuth();
-  const [items, setItems] = useState<SharedItem[]>([]);
-  const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
 
-  const loadItems = async () => {
-    if (!user) return;
-    try {
-      setLoading(true);
-      const data = await getSharedItemsByUser(user.id);
-      const zoneItems = data.filter(item => item.zone === zone);
-      setItems(zoneItems);
-    } catch (error) {
-      console.error('Failed to load items:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const { data: allItems = [], isLoading } = useSharedItemsByUser(user?.id);
+  const deleteMutation = useDeleteSharedItem();
 
-  useEffect(() => {
-    loadItems();
-  }, [user, zone]);
+  // Filter items by zone
+  const items = useMemo(() => {
+    return allItems.filter(item => item.zone === zone);
+  }, [allItems, zone]);
 
-  const handleDelete = async (id: string) => {
-    try {
-      await deleteSharedItem(id);
-      setItems(items.filter(item => item.id !== id));
-    } catch (error) {
-      console.error('Failed to delete item:', error);
+  // Pagination
+  const pagination = usePagination({ data: items, itemsPerPage: 12 });
+
+  const handleDelete = (id: string) => {
+    if (confirm('Are you sure you want to delete this item?')) {
+      deleteMutation.mutate(id);
     }
   };
 
   const handleItemCreated = () => {
     setDialogOpen(false);
-    loadItems();
   };
 
   return (
@@ -74,16 +61,14 @@ export default function ShareZonePage() {
         </Dialog>
       </div>
 
-      {loading ? (
+      {isLoading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {[1, 2, 3].map((i) => (
+          {[1, 2, 3, 4, 5, 6].map((i) => (
             <Card key={i}>
-              <CardHeader>
-                <Skeleton className="h-6 w-3/4 bg-muted" />
+              <CardContent className="p-6">
+                <Skeleton className="h-48 w-full bg-muted mb-4" />
+                <Skeleton className="h-6 w-3/4 bg-muted mb-2" />
                 <Skeleton className="h-4 w-1/2 bg-muted" />
-              </CardHeader>
-              <CardContent>
-                <Skeleton className="h-32 w-full bg-muted" />
               </CardContent>
             </Card>
           ))}
@@ -96,25 +81,39 @@ export default function ShareZonePage() {
           </CardContent>
         </Card>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {items.map((item) => (
-            <ItemCard
-              key={item.id}
-              item={item}
-              showOwner={false}
-              actions={
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  onClick={() => handleDelete(item.id)}
-                >
-                  <Trash2 className="w-4 h-4 mr-1" />
-                  Delete
-                </Button>
-              }
-            />
-          ))}
-        </div>
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {pagination.paginatedData.map((item) => (
+              <ItemCard
+                key={item.id}
+                item={item}
+                showOwner={false}
+                actions={
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={() => handleDelete(item.id)}
+                    disabled={deleteMutation.isPending}
+                  >
+                    <Trash2 className="w-4 h-4 mr-1" />
+                    Delete
+                  </Button>
+                }
+              />
+            ))}
+          </div>
+          
+          <Pagination
+            currentPage={pagination.currentPage}
+            totalPages={pagination.totalPages}
+            onPageChange={pagination.goToPage}
+            hasNextPage={pagination.hasNextPage}
+            hasPreviousPage={pagination.hasPreviousPage}
+            startIndex={pagination.startIndex}
+            endIndex={pagination.endIndex}
+            totalItems={pagination.totalItems}
+          />
+        </>
       )}
     </div>
   );

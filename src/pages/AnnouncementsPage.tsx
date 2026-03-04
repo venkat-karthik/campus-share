@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { getAnnouncements, createAnnouncement, deleteAnnouncement } from '@/db/api';
-import type { Announcement, AnnouncementCategory } from '@/types';
+import { useAnnouncements, useCreateAnnouncement, useDeleteAnnouncement } from '@/hooks/use-announcements';
+import { usePagination } from '@/hooks/use-pagination';
+import { useDebounce } from '@/hooks/use-debounce';
+import type { AnnouncementCategory } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -12,8 +14,12 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Plus, Trash2, Megaphone } from 'lucide-react';
+import { SearchBar } from '@/components/common/SearchBar';
+import { FilterBar } from '@/components/common/FilterBar';
+import { Pagination } from '@/components/common/Pagination';
 import { useForm } from 'react-hook-form';
-import { useToast } from '@/hooks/use-toast';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { announcementSchema } from '@/lib/validators';
 
 const CATEGORY_COLORS: Record<AnnouncementCategory, string> = {
   exam: 'bg-primary text-primary-foreground',
@@ -22,14 +28,27 @@ const CATEGORY_COLORS: Record<AnnouncementCategory, string> = {
   emergency: 'bg-destructive text-destructive-foreground',
 };
 
+const CATEGORY_OPTIONS = [
+  { value: 'exam', label: 'Exam' },
+  { value: 'holiday', label: 'Holiday' },
+  { value: 'placement', label: 'Placement' },
+  { value: 'emergency', label: 'Emergency' },
+];
+
 export default function AnnouncementsPage() {
   const { user, profile } = useAuth();
-  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
-  const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const { toast } = useToast();
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState<string>('all');
+
+  const debouncedSearch = useDebounce(searchQuery, 300);
+
+  const { data: announcements = [], isLoading } = useAnnouncements();
+  const createMutation = useCreateAnnouncement();
+  const deleteMutation = useDeleteAnnouncement();
 
   const form = useForm({
+    resolver: zodResolver(announcementSchema),
     defaultValues: {
       title: '',
       content: '',
@@ -37,46 +56,47 @@ export default function AnnouncementsPage() {
     },
   });
 
-  const loadAnnouncements = async () => {
-    try {
-      setLoading(true);
-      const data = await getAnnouncements();
-      setAnnouncements(data);
-    } catch (error) {
-      console.error('Failed to load announcements:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
+  // Filter and search
+  const filteredAnnouncements = useMemo(() => {
+    let result = announcements;
 
-  useEffect(() => {
-    loadAnnouncements();
-  }, []);
+    // Filter by category
+    if (selectedCategory !== 'all') {
+      result = result.filter(a => a.category === selectedCategory);
+    }
+
+    // Search
+    if (debouncedSearch) {
+      const query = debouncedSearch.toLowerCase();
+      result = result.filter(a =>
+        a.title.toLowerCase().includes(query) ||
+        a.content.toLowerCase().includes(query)
+      );
+    }
+
+    return result;
+  }, [announcements, selectedCategory, debouncedSearch]);
+
+  // Pagination
+  const pagination = usePagination({ data: filteredAnnouncements, itemsPerPage: 10 });
 
   const handleSubmit = async (values: { title: string; content: string; category: AnnouncementCategory }) => {
     if (!user) return;
 
-    try {
-      await createAnnouncement({
-        ...values,
-        created_by: user.id,
-      });
-      toast({ title: 'Announcement created successfully' });
-      setDialogOpen(false);
-      form.reset();
-      loadAnnouncements();
-    } catch (error) {
-      toast({ title: 'Failed to create announcement', variant: 'destructive' });
-    }
+    createMutation.mutate(
+      { ...values, created_by: user.id },
+      {
+        onSuccess: () => {
+          setDialogOpen(false);
+          form.reset();
+        },
+      }
+    );
   };
 
-  const handleDelete = async (id: string) => {
-    try {
-      await deleteAnnouncement(id);
-      setAnnouncements(announcements.filter(a => a.id !== id));
-      toast({ title: 'Announcement deleted' });
-    } catch (error) {
-      toast({ title: 'Failed to delete announcement', variant: 'destructive' });
+  const handleDelete = (id: string) => {
+    if (confirm('Are you sure you want to delete this announcement?')) {
+      deleteMutation.mutate(id);
     }
   };
 
@@ -155,7 +175,9 @@ export default function AnnouncementsPage() {
                       </FormItem>
                     )}
                   />
-                  <Button type="submit" className="w-full">Create Announcement</Button>
+                  <Button type="submit" className="w-full" disabled={createMutation.isPending}>
+                    {createMutation.isPending ? 'Creating...' : 'Create Announcement'}
+                  </Button>
                 </form>
               </Form>
             </DialogContent>
@@ -163,7 +185,31 @@ export default function AnnouncementsPage() {
         )}
       </div>
 
-      {loading ? (
+      {/* Search and Filter */}
+      <div className="flex flex-col sm:flex-row gap-4">
+        <SearchBar
+          value={searchQuery}
+          onChange={setSearchQuery}
+          placeholder="Search announcements..."
+          className="flex-1"
+        />
+        <FilterBar
+          label="Category"
+          value={selectedCategory}
+          onChange={setSelectedCategory}
+          options={CATEGORY_OPTIONS}
+          placeholder="All Categories"
+        />
+      </div>
+
+      {/* Results count */}
+      {!isLoading && (
+        <div className="text-sm text-muted-foreground">
+          Found {filteredAnnouncements.length} {filteredAnnouncements.length === 1 ? 'announcement' : 'announcements'}
+        </div>
+      )}
+
+      {isLoading ? (
         <div className="space-y-4">
           {[1, 2, 3].map((i) => (
             <Card key={i}>
@@ -174,44 +220,62 @@ export default function AnnouncementsPage() {
             </Card>
           ))}
         </div>
-      ) : announcements.length === 0 ? (
+      ) : pagination.paginatedData.length === 0 ? (
         <Card className="text-center py-12">
           <CardContent>
-            <p className="text-muted-foreground text-lg">No announcements yet.</p>
+            <p className="text-muted-foreground text-lg">
+              {searchQuery || selectedCategory !== 'all'
+                ? 'No announcements match your search criteria.'
+                : 'No announcements yet.'}
+            </p>
           </CardContent>
         </Card>
       ) : (
-        <div className="space-y-4">
-          {announcements.map((announcement) => (
-            <Card key={announcement.id} className="shadow-card">
-              <CardHeader>
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Badge className={CATEGORY_COLORS[announcement.category]}>
-                        {announcement.category.toUpperCase()}
-                      </Badge>
-                      <span className="text-xs text-muted-foreground">
-                        {new Date(announcement.created_at).toLocaleDateString()}
-                      </span>
+        <>
+          <div className="space-y-4">
+            {pagination.paginatedData.map((announcement) => (
+              <Card key={announcement.id} className="shadow-card">
+                <CardHeader>
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-2">
+                        <Badge className={CATEGORY_COLORS[announcement.category]}>
+                          {announcement.category.toUpperCase()}
+                        </Badge>
+                        <span className="text-xs text-muted-foreground">
+                          {new Date(announcement.created_at).toLocaleDateString()}
+                        </span>
+                      </div>
+                      <CardTitle>{announcement.title}</CardTitle>
+                      <CardDescription className="mt-2">{announcement.content}</CardDescription>
                     </div>
-                    <CardTitle>{announcement.title}</CardTitle>
-                    <CardDescription className="mt-2">{announcement.content}</CardDescription>
+                    {isAdmin && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDelete(announcement.id)}
+                        disabled={deleteMutation.isPending}
+                      >
+                        <Trash2 className="w-4 h-4 text-destructive" />
+                      </Button>
+                    )}
                   </div>
-                  {isAdmin && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleDelete(announcement.id)}
-                    >
-                      <Trash2 className="w-4 h-4 text-destructive" />
-                    </Button>
-                  )}
-                </div>
-              </CardHeader>
-            </Card>
-          ))}
-        </div>
+                </CardHeader>
+              </Card>
+            ))}
+          </div>
+
+          <Pagination
+            currentPage={pagination.currentPage}
+            totalPages={pagination.totalPages}
+            onPageChange={pagination.goToPage}
+            hasNextPage={pagination.hasNextPage}
+            hasPreviousPage={pagination.hasPreviousPage}
+            startIndex={pagination.startIndex}
+            endIndex={pagination.endIndex}
+            totalItems={pagination.totalItems}
+          />
+        </>
       )}
     </div>
   );

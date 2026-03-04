@@ -1,14 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
-import { getSharedItemsByZone } from '@/db/api';
-import type { SharedItem, ItemCategory } from '@/types';
+import { useSharedItemsByZone } from '@/hooks/use-shared-items';
+import { usePagination } from '@/hooks/use-pagination';
+import { useDebounce } from '@/hooks/use-debounce';
+import type { ItemCategory } from '@/types';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { SearchBar } from '@/components/common/SearchBar';
+import { FilterBar } from '@/components/common/FilterBar';
+import { Pagination } from '@/components/common/Pagination';
 import ItemCard from '@/components/ItemCard';
 
-const CATEGORIES: { value: ItemCategory | 'all'; label: string }[] = [
-  { value: 'all', label: 'All Categories' },
+const CATEGORIES: { value: string; label: string }[] = [
   { value: 'books', label: 'Books' },
   { value: 'laptops', label: 'Laptops' },
   { value: 'aprons', label: 'Aprons' },
@@ -17,36 +20,38 @@ const CATEGORIES: { value: ItemCategory | 'all'; label: string }[] = [
 
 export default function ReceiveZonePage() {
   const { zone } = useParams<{ zone: string }>();
-  const [items, setItems] = useState<SharedItem[]>([]);
-  const [filteredItems, setFilteredItems] = useState<SharedItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  
+  const debouncedSearch = useDebounce(searchQuery, 300);
+  
+  const { data: items = [], isLoading } = useSharedItemsByZone(zone);
 
-  useEffect(() => {
-    const loadItems = async () => {
-      if (!zone) return;
-      try {
-        setLoading(true);
-        const data = await getSharedItemsByZone(zone);
-        setItems(data);
-        setFilteredItems(data);
-      } catch (error) {
-        console.error('Failed to load items:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
+  // Filter and search logic
+  const filteredItems = useMemo(() => {
+    let result = items;
 
-    loadItems();
-  }, [zone]);
-
-  useEffect(() => {
-    if (selectedCategory === 'all') {
-      setFilteredItems(items);
-    } else {
-      setFilteredItems(items.filter(item => item.category === selectedCategory));
+    // Filter by category
+    if (selectedCategory !== 'all') {
+      result = result.filter(item => item.category === selectedCategory);
     }
-  }, [selectedCategory, items]);
+
+    // Search by name, description, brand, or owner
+    if (debouncedSearch) {
+      const query = debouncedSearch.toLowerCase();
+      result = result.filter(item => 
+        item.name.toLowerCase().includes(query) ||
+        item.description?.toLowerCase().includes(query) ||
+        item.brand?.toLowerCase().includes(query) ||
+        item.profiles?.full_name.toLowerCase().includes(query)
+      );
+    }
+
+    return result;
+  }, [items, selectedCategory, debouncedSearch]);
+
+  // Pagination
+  const pagination = usePagination({ data: filteredItems, itemsPerPage: 12 });
 
   return (
     <div className="space-y-6">
@@ -55,25 +60,34 @@ export default function ReceiveZonePage() {
         <p className="text-muted-foreground mt-1">Zone: {zone?.toUpperCase()}</p>
       </div>
 
-      <div className="flex items-center gap-4">
-        <label className="text-sm font-medium">Filter by category:</label>
-        <Select value={selectedCategory} onValueChange={setSelectedCategory}>
-          <SelectTrigger className="w-48">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {CATEGORIES.map((cat) => (
-              <SelectItem key={cat.value} value={cat.value}>
-                {cat.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+      {/* Search and Filter Bar */}
+      <div className="flex flex-col sm:flex-row gap-4">
+        <SearchBar
+          value={searchQuery}
+          onChange={setSearchQuery}
+          placeholder="Search items by name, description, brand, or owner..."
+          className="flex-1"
+        />
+        <FilterBar
+          label="Category"
+          value={selectedCategory}
+          onChange={setSelectedCategory}
+          options={CATEGORIES}
+          placeholder="All Categories"
+        />
       </div>
 
-      {loading ? (
+      {/* Results count */}
+      {!isLoading && (
+        <div className="text-sm text-muted-foreground">
+          Found {filteredItems.length} {filteredItems.length === 1 ? 'item' : 'items'}
+        </div>
+      )}
+
+      {/* Items Grid */}
+      {isLoading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {[1, 2, 3].map((i) => (
+          {[1, 2, 3, 4, 5, 6].map((i) => (
             <Card key={i}>
               <CardHeader>
                 <Skeleton className="h-6 w-3/4 bg-muted" />
@@ -85,18 +99,40 @@ export default function ReceiveZonePage() {
             </Card>
           ))}
         </div>
-      ) : filteredItems.length === 0 ? (
+      ) : pagination.paginatedData.length === 0 ? (
         <Card className="text-center py-12">
           <CardContent>
-            <p className="text-muted-foreground text-lg">No items available in this zone.</p>
+            <p className="text-muted-foreground text-lg">
+              {searchQuery || selectedCategory !== 'all' 
+                ? 'No items match your search criteria.' 
+                : 'No items available in this zone.'}
+            </p>
+            {(searchQuery || selectedCategory !== 'all') && (
+              <p className="text-sm text-muted-foreground mt-2">
+                Try adjusting your filters or search terms.
+              </p>
+            )}
           </CardContent>
         </Card>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {filteredItems.map((item) => (
-            <ItemCard key={item.id} item={item} showOwner={true} />
-          ))}
-        </div>
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {pagination.paginatedData.map((item) => (
+              <ItemCard key={item.id} item={item} showOwner={true} />
+            ))}
+          </div>
+          
+          <Pagination
+            currentPage={pagination.currentPage}
+            totalPages={pagination.totalPages}
+            onPageChange={pagination.goToPage}
+            hasNextPage={pagination.hasNextPage}
+            hasPreviousPage={pagination.hasPreviousPage}
+            startIndex={pagination.startIndex}
+            endIndex={pagination.endIndex}
+            totalItems={pagination.totalItems}
+          />
+        </>
       )}
     </div>
   );
