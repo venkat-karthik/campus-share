@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { getLostFoundItems, createLostFoundItem, updateLostFoundItem, deleteLostFoundItem } from '@/db/api';
-import type { LostFoundItem } from '@/types';
+import { useLostFoundItems, useCreateLostFoundItem, useUpdateLostFoundItem, useDeleteLostFoundItem } from '@/hooks/use-lost-found';
+import { usePagination } from '@/hooks/use-pagination';
+import { useDebounce } from '@/hooks/use-debounce';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -11,6 +12,9 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Plus, Search, Trash2, CheckCircle } from 'lucide-react';
+import { SearchBar } from '@/components/common/SearchBar';
+import { FilterBar } from '@/components/common/FilterBar';
+import { Pagination } from '@/components/common/Pagination';
 import { useForm } from 'react-hook-form';
 import { useToast } from '@/hooks/use-toast';
 import { useImageUpload } from '@/hooks/use-image-upload';
