@@ -1,4 +1,6 @@
 import { supabase } from './supabase';
+import { handleApiError } from '@/lib/api-client';
+import { logger } from '@/lib/logger';
 import type {
   SharedItem,
   Announcement,
@@ -12,14 +14,19 @@ import type {
 
 // Shared Items API
 export async function getSharedItemsByUser(userId: string): Promise<SharedItem[]> {
-  const { data, error } = await supabase
-    .from('shared_items')
-    .select('*, profiles!shared_items_user_id_fkey(id, full_name, role)')
-    .eq('user_id', userId)
-    .order('created_at', { ascending: false });
+  try {
+    const { data, error } = await supabase
+      .from('shared_items')
+      .select('*, profiles!shared_items_user_id_fkey(id, full_name, role)')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
 
-  if (error) throw error;
-  return Array.isArray(data) ? data : [];
+    if (error) throw error;
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    logger.error('Failed to fetch shared items by user', { userId, error });
+    return handleApiError(error, 'getSharedItemsByUser');
+  }
 }
 
 export async function getSharedItemsByZone(zone: string): Promise<SharedItem[]> {

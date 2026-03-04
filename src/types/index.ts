@@ -7,3 +7,6 @@ export interface Option {
 
 // Re-export all types from types.ts
 export * from './types';
+
+// Re-export all new feature types
+export * from './new-features';
